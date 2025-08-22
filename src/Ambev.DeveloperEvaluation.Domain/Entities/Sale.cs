@@ -1,5 +1,7 @@
-﻿using Ambev.DeveloperEvaluation.Domain.Common;
+using Ambev.DeveloperEvaluation.Common.Validation;
+using Ambev.DeveloperEvaluation.Domain.Common;
 using Ambev.DeveloperEvaluation.Domain.Enums;
+using Ambev.DeveloperEvaluation.Domain.Validation;
 
 namespace Ambev.DeveloperEvaluation.Domain.Entities;
 
@@ -37,9 +39,13 @@ public class Sale : BaseEntity
     /// </summary>
     public SaleStatus Status { get; set; }
     /// <summary>
-    /// Gets or sets the list of SalesItem
+    /// Gets or sets the list of SaleItem
     /// </summary>
-    public List<SalesItem> Items { get; set; } = [];
+    public List<SaleItem> Items { get; set; } = [];
+    /// <summary>
+    /// Gets or sets the total amount of the sale
+    /// </summary>
+    public decimal TotalAmount { get; set; }
     /// <summary>
     /// Gets or sets the date and time when the subsidiary was created
     /// </summary>
@@ -75,16 +81,21 @@ public class Sale : BaseEntity
     /// <summary>
     /// Adds a new item to the sale.
     /// </summary>
-    /// <param name="item"></param>
-    /// <exception cref="InvalidOperationException"></exception>
-    public void AddItem(SalesItem item)
+    /// <param name="item">The sales item to add</param>
+    /// <exception cref="InvalidOperationException">Thrown when trying to add items to a cancelled or completed sale</exception>
+    public void AddItem(SaleItem item)
     {
         if (Status == SaleStatus.Cancelled)
             throw new InvalidOperationException("You cannot add items to a canceled sale.");
+        
+        if (Status == SaleStatus.Completed)
+            throw new InvalidOperationException("You cannot add items to a completed sale.");
 
+        item.SaleId = Id;
         item.ApplyDiscountRules();
-
         Items.Add(item);
+        TotalAmount = CalculateTotal();
+        UpdatedAt = DateTime.UtcNow;
     }
 
     /// <summary>
@@ -93,44 +104,137 @@ public class Sale : BaseEntity
     public void Cancel()
     {
         Status = SaleStatus.Cancelled;
+        TotalAmount = CalculateTotal();
         UpdatedAt = DateTime.UtcNow;
     }
 
     /// <summary>
     /// Cancels a specific item in the sale by setting its IsCancelled property to true and updating the timestamp.
     /// </summary>
-    /// <param name="itemId"></param>
+    /// <param name="itemId">The ID of the item to cancel</param>
+    /// <exception cref="InvalidOperationException">Thrown when trying to cancel items in a cancelled sale</exception>
+    /// <exception cref="KeyNotFoundException">Thrown when the item is not found</exception>
     public void CancelItem(Guid itemId)
     {
+        if (Status == SaleStatus.Cancelled)
+            throw new InvalidOperationException("Cannot cancel items in a cancelled sale.");
+            
         var item = Items.FirstOrDefault(i => i.Id == itemId);
-        if (item != null)
-        {
-            item.IsCancelled = true;
-            UpdatedAt = DateTime.UtcNow;
-        }
+        if (item == null)
+            throw new KeyNotFoundException($"Item with ID {itemId} not found in this sale.");
+            
+        if (item.IsCancelled)
+            throw new InvalidOperationException("Item is already cancelled.");
+
+        item.Cancel();
+        TotalAmount = CalculateTotal();
+        UpdatedAt = DateTime.UtcNow;
     }
 
     /// <summary>
     /// Completes the sale, setting its status to Completed and updating the timestamp.
     /// </summary>
-    /// <exception cref="InvalidOperationException"></exception>
+    /// <exception cref="InvalidOperationException">Thrown when trying to complete a cancelled sale or a sale with no items</exception>
     public void Complete()
     {
         if (Status == SaleStatus.Cancelled)
-            throw new InvalidOperationException("Não é possível completar uma venda cancelada.");
+            throw new InvalidOperationException("Cannot complete a cancelled sale.");
+            
+        if (Status == SaleStatus.Completed)
+            throw new InvalidOperationException("Sale is already completed.");
+            
+        if (!Items.Any() || Items.All(i => i.IsCancelled))
+            throw new InvalidOperationException("Cannot complete a sale with no active items.");
 
         Status = SaleStatus.Completed;
+        UpdatedAt = DateTime.UtcNow;
+    }
+    
+    /// <summary>
+    /// Updates an existing item in the sale
+    /// </summary>
+    /// <param name="itemId">The ID of the item to update</param>
+    /// <param name="quantity">New quantity</param>
+    /// <param name="unitPrice">New unit price</param>
+    /// <exception cref="InvalidOperationException">Thrown when trying to update items in a completed or cancelled sale</exception>
+    /// <exception cref="KeyNotFoundException">Thrown when the item is not found</exception>
+    public void UpdateItem(Guid itemId, int quantity, decimal unitPrice)
+    {
+        if (Status == SaleStatus.Cancelled)
+            throw new InvalidOperationException("Cannot update items in a cancelled sale.");
+            
+        if (Status == SaleStatus.Completed)
+            throw new InvalidOperationException("Cannot update items in a completed sale.");
+            
+        var item = Items.FirstOrDefault(i => i.Id == itemId);
+        if (item == null)
+            throw new KeyNotFoundException($"Item with ID {itemId} not found in this sale.");
+            
+        if (item.IsCancelled)
+            throw new InvalidOperationException("Cannot update a cancelled item.");
+
+        item.Quantity = quantity;
+        item.UnitPrice = unitPrice;
+        item.ApplyDiscountRules();
+        UpdatedAt = DateTime.UtcNow;
+    }
+    
+    /// <summary>
+    /// Removes an item from the sale
+    /// </summary>
+    /// <param name="itemId">The ID of the item to remove</param>
+    /// <exception cref="InvalidOperationException">Thrown when trying to remove items from a completed or cancelled sale</exception>
+    /// <exception cref="KeyNotFoundException">Thrown when the item is not found</exception>
+    public void RemoveItem(Guid itemId)
+    {
+        if (Status == SaleStatus.Cancelled)
+            throw new InvalidOperationException("Cannot remove items from a cancelled sale.");
+            
+        if (Status == SaleStatus.Completed)
+            throw new InvalidOperationException("Cannot remove items from a completed sale.");
+            
+        var item = Items.FirstOrDefault(i => i.Id == itemId);
+        if (item == null)
+            throw new KeyNotFoundException($"Item with ID {itemId} not found in this sale.");
+
+        Items.Remove(item);
         UpdatedAt = DateTime.UtcNow;
     }
 
     /// <summary>
     /// Generates a unique sale number based on the current date and time, followed by a random number.
     /// </summary>
-    /// <returns></returns>
+    /// <returns>A unique sale number string</returns>
     private string GenerateSaleNumber()
     {
         var random = new Random();
         var randomPart = random.Next(1000, 9999).ToString();
         return $"{DateTime.UtcNow:yyyyMMddHHmmss}{randomPart}";
+    }
+    
+    /// <summary>
+    /// Performs validation of the sale entity using the SaleValidator rules.
+    /// </summary>
+    /// <returns>
+    /// A <see cref="ValidationResultDetail"/> containing:
+    /// - IsValid: Indicates whether all validation rules passed
+    /// - Errors: Collection of validation errors if any rules failed
+    /// </returns>
+    /// <remarks>
+    /// <listheader>The validation includes checking:</listheader>
+    /// <list type="bullet">Sale number format and length</list>
+    /// <list type="bullet">Sale date validity</list>
+    /// <list type="bullet">Customer and Subsidiary IDs</list>
+    /// <list type="bullet">Items collection and individual item validation</list>
+    /// </remarks>
+    public ValidationResultDetail Validation()
+    {
+        var validator = new SaleValidator();
+        var result = validator.Validate(this);
+        return new ValidationResultDetail
+        {
+            IsValid = result.IsValid,
+            Errors = result.Errors.Select(o => (ValidationErrorDetail)o)
+        };
     }
 }
