@@ -1,11 +1,11 @@
-﻿using Ambev.DeveloperEvaluation.Domain.Entities;
+using Ambev.DeveloperEvaluation.Domain.Entities;
 using FluentValidation;
 
 namespace Ambev.DeveloperEvaluation.Domain.Validation;
 
-public class SalesItemValidator : AbstractValidator<SalesItem>
+public class SaleItemValidator : AbstractValidator<SaleItem>
 {
-    public SalesItemValidator()
+    public SaleItemValidator()
     {
         RuleFor(item => item.Quantity)
             .InclusiveBetween(0, 20).WithMessage("Quantity must be between 0 end 20.");
